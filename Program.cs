@@ -2,6 +2,9 @@
 using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Authentication;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,7 +15,7 @@ namespace FtpRunner
     {
         static bool _verbose = false;
 
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
             ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
 
@@ -32,7 +35,7 @@ namespace FtpRunner
 
                 while (true)
                 {
-                    RunFtpRunner().Wait();
+                    await RunFtpRunner();
                 }
             }
             catch (Exception ex)
@@ -45,6 +48,11 @@ namespace FtpRunner
 
         static string[] _stamps = new[]
         {
+            "waws-prod-euapdm1-505",
+            "waws-prod-msftbay-901",
+            "waws-prod-msftblu-901",
+            "waws-prod-msftdb3-901",
+            "waws-prod-msfthk1-901",
             "waws-prod-am2-001",
             "waws-prod-auh-001",
             "waws-prod-bay-001",
@@ -66,7 +74,6 @@ namespace FtpRunner
             "waws-prod-dxb-001",
             "waws-prod-euapbn1-001",
             "waws-prod-euapdm1-001",
-            "waws-prod-euapdm1-505",
             "waws-prod-fra-001",
             "waws-prod-hk1-001",
             "waws-prod-jinc-001",
@@ -77,14 +84,11 @@ namespace FtpRunner
             "waws-prod-ma1-001",
             "waws-prod-ml1-001",
             "waws-prod-mrs-001",
-            "waws-prod-msftbay-901",
-            "waws-prod-msftblu-901",
-            "waws-prod-msftdb3-901",
-            "waws-prod-msfthk1-901",
             "waws-prod-mwh-001",
             "waws-prod-os1-001",
             "waws-prod-osl-001",
             "waws-prod-par-001",
+            "waws-prod-plc-001",
             "waws-prod-pn1-001",
             "waws-prod-ps1-001",
             "waws-prod-qac-001",
@@ -180,12 +184,12 @@ namespace FtpRunner
                 var ftpHostname = $"{stampName}.ftp.azurewebsites.windows.net";
                 var drips = Dns.GetHostAddresses(ftpHostname);
 
-                foreach (var enableSsl in new[] { false }) // , true })
+                foreach (var enableSsl in new[] { true }) // , true })
                 {
-                    await PingFtp($"ftp://{ftpHostname}/site/wwwroot", siteName, userName, password, enableSsl);
+                    await PingFtp(ftpHostname, $"ftp://{ftpHostname}/site/wwwroot", siteName, userName, password, enableSsl);
                     foreach (var drip in drips)
                     {
-                        await PingFtp($"ftp://{drip}/site/wwwroot", siteName, userName, password, enableSsl);
+                        await PingFtp(ftpHostname, $"ftp://{drip}/site/wwwroot", siteName, userName, password, enableSsl);
                     }
                 }
             }
@@ -195,7 +199,7 @@ namespace FtpRunner
             }
         }
 
-        static async Task PingFtp(string url, string siteName, string userName, string password, bool EnableSsl)
+        static async Task PingFtp(string hostName, string url, string siteName, string userName, string password, bool EnableSsl)
         {
             var start = DateTime.UtcNow;
             var strb = new StringBuilder();
@@ -203,28 +207,30 @@ namespace FtpRunner
 
             try
             {
-                FtpWebRequest request = (FtpWebRequest)WebRequest.Create(url);
-                request.Method = WebRequestMethods.Ftp.ListDirectory;
-                request.Credentials = new NetworkCredential(String.Format("{0}\\{1}", siteName, userName), password);
-                if (EnableSsl)
-                {
-                    // ExplicitSSLFtps
-                    // Explicit do control over 21 and data securedly over data channel
-                    request.EnableSsl = EnableSsl;
-                }
+                //FtpWebRequest request = (FtpWebRequest)WebRequest.Create(url);
+                //request.Method = WebRequestMethods.Ftp.ListDirectory;
+                //request.Credentials = new NetworkCredential(String.Format("{0}\\{1}", siteName, userName), password);
+                //if (EnableSsl)
+                //{
+                //    // ExplicitSSLFtps
+                //    // Explicit do control over 21 and data securedly over data channel
+                //    request.EnableSsl = EnableSsl;
+                //}
 
-                using (WebResponse response = await request.GetResponseAsync())
-                {
-                    strb.AppendFormat("connected ({0}ms) ", (int)(DateTime.UtcNow - start).TotalMilliseconds);
-                    using (var streamReader = new StreamReader(response.GetResponseStream()))
-                    {
-                        while (!streamReader.EndOfStream)
-                        {
-                            var line = await streamReader.ReadLineAsync();
-                            strb.Append('.');
-                        }
-                    }
-                }
+                //using (WebResponse response = await request.GetResponseAsync())
+                //{
+                //    strb.AppendFormat("connected ({0}ms) ", (int)(DateTime.UtcNow - start).TotalMilliseconds);
+                //    using (var streamReader = new StreamReader(response.GetResponseStream()))
+                //    {
+                //        while (!streamReader.EndOfStream)
+                //        {
+                //            var line = await streamReader.ReadLineAsync();
+                //            strb.Append('.');
+                //        }
+                //    }
+                //}
+
+                await ImplicitSSLFtps(hostName, new Uri(url).Host, siteName, userName, password, strb);
             }
             catch (Exception ex)
             {
@@ -268,6 +274,64 @@ namespace FtpRunner
             {
                 Logger.Instance.AppendLine($"{stamp} {ex.Message}");
                 return false;
+            }
+        }
+
+        static void ExplicitSSLFtps(string hostName, string siteName, string userName, string password)
+        {
+            FtpWebRequest request = (FtpWebRequest)WebRequest.Create($"ftp://{hostName}/site/wwwroot");
+            request.Method = WebRequestMethods.Ftp.ListDirectory;
+            request.Credentials = new NetworkCredential($"{siteName}\\{userName}", password);
+            request.EnableSsl = true; // Here you enabled request to use ssl instead of clear text
+            WebResponse response = request.GetResponse();
+            using (var streamReader = new StreamReader(response.GetResponseStream()))
+            {
+                Console.WriteLine("connected");
+                Console.WriteLine(streamReader.ReadToEnd());
+            }
+        }
+
+        static async Task ImplicitSSLFtps(string hostName, string ipAddress, string siteName, string userName, string password, StringBuilder strb)
+        {
+            //RemoteCertificateValidationCallback certValidator = delegate
+            //{
+            //    Console.WriteLine("RemoteCertificateValidationCallback called");
+            //    return true;
+            //};
+
+            // Open a connection to the server over port 990
+            // (default port for FTP over implicit SSL)
+            using (TcpClient client = new TcpClient(ipAddress, 990))
+            using (SslStream sslStream = new SslStream(client.GetStream(), true))
+            {
+                var buf = new byte[64];
+
+                // Start SSL/TLS Handshake
+                await sslStream.AuthenticateAsClientAsync(hostName);
+
+                var read = await sslStream.ReadAsync(buf, 0, buf.Length);
+                //Console.WriteLine($"ImplicitSSLFtps connected {read} {Encoding.UTF8.GetString(buf, 0, read)}");
+
+                // Setup a delegate for writing FTP commands to the SSL stream
+                var WriteCommandAsync = new Func<string, Task>(async command =>
+                {
+                    byte[] commandBytes =
+                    Encoding.ASCII.GetBytes(command + Environment.NewLine);
+                    await sslStream.WriteAsync(commandBytes, 0, commandBytes.Length);
+                    await sslStream.FlushAsync();
+                });
+
+                // Write raw FTP commands to the SSL stream
+                await WriteCommandAsync($"USER {siteName}\\{userName}");
+                read = await sslStream.ReadAsync(buf, 0, buf.Length);
+                //Console.WriteLine($"ImplicitSSLFtps connected {read} {Encoding.UTF8.GetString(buf, 0, read)}");
+                await WriteCommandAsync($"PASS {password}");
+                read = await sslStream.ReadAsync(buf, 0, buf.Length);
+                //User logged in.
+                //Console.WriteLine($"Connect {hostName}({ipAddress}) {read} {Encoding.UTF8.GetString(buf, 0, read)}");
+                strb.Append($"{read} bytes read '{Encoding.UTF8.GetString(buf, 0, read)}'");
+
+                // Connect to data port to download the file
             }
         }
     }
